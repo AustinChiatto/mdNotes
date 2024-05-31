@@ -11,6 +11,7 @@ import Cocoa
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
     var recentCharacters = [String]()
+    var globalMonitor: Any?
     
     let mdCommands: [String: [CGKeyCode]] = [
         "# ": [CGKeyCode(56), CGKeyCode(55), CGKeyCode(17)],                // ⇧ ⌘ T
@@ -24,7 +25,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         setupStatusItem()
-        checkAndRequestPermissions()
+        checkAndRequestAccessibilityPermissions()
+        addAppActiveObserver()
+    }
+    
+    func applicationWillTerminate(_ aNotification: Notification) {
+        removeGlobalMonitor()
+        NotificationCenter.default.removeObserver(self)
     }
 
     func setupStatusItem() {
@@ -39,12 +46,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.terminate(self)
     }
     
-    func checkAndRequestPermissions() {
-        let options: CFDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as NSString: true] as CFDictionary
-        let accessEnabled = AXIsProcessTrustedWithOptions(options)
-        if accessEnabled {
-            startGlobalMonitoringKeystrokes()
+    func checkAndRequestAccessibilityPermissions() {
+        if AXIsProcessTrusted() {
+            setupGlobalMonitoring()
         } else {
+            let options: CFDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as NSObject: true] as CFDictionary
+            _ = AXIsProcessTrustedWithOptions(options)
+            
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 self.showPermissionsAlert()
             }
@@ -63,10 +71,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.runModal()
     }
     
-    func startGlobalMonitoringKeystrokes() {
-        NSEvent.addGlobalMonitorForEvents(matching: .keyUp) { [weak self] event in
+    func setupGlobalMonitoring() {
+        guard let notesApp = NSWorkspace.shared.frontmostApplication, notesApp.bundleIdentifier == "com.apple.Notes" else {
+            removeGlobalMonitor()
+            return
+        }
+        
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyUp) { [weak self] event in
             self?.handleKeyUpEvent(event)
         }
+    }
+
+    func removeGlobalMonitor() {
+        if globalMonitor != nil {
+            NSEvent.removeMonitor(globalMonitor!)
+            globalMonitor = nil
+        }
+    }
+
+    func addAppActiveObserver() {
+        let workspace = NSWorkspace.shared.notificationCenter
+        workspace.addObserver(self, selector: #selector(appDidActivate), name: NSWorkspace.didActivateApplicationNotification, object: nil)
+    }
+
+    @objc func appDidActivate(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let app = userInfo[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+              app.bundleIdentifier == "com.apple.Notes" else {
+            removeGlobalMonitor()
+            return
+        }
+        setupGlobalMonitoring()
     }
     
     func handleKeyUpEvent(_ event: NSEvent) {
