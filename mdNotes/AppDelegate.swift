@@ -23,35 +23,45 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     ]
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
-            setupStatusItem()
-            checkAccessibilityPermissions()
-            startGlobalMonitoringKeystrokes()
-        }
-    
+        setupStatusItem()
+        checkAndRequestPermissions()
+    }
+
     func setupStatusItem() {
-            statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-            statusItem?.button?.title = "mdNotes"
-            let menu = NSMenu()
-            menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
-            statusItem?.menu = menu
-        }
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem?.button?.title = "mdNotes"
+        let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
+        statusItem?.menu = menu
+    }
 
-        @objc func quit() {
-            NSApplication.shared.terminate(self)
-        }
+    @objc func quit() {
+        NSApplication.shared.terminate(self)
+    }
     
-    func checkAccessibilityPermissions() {
-            DispatchQueue.main.async {
-                let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as NSString: true]
-                let accessEnabled = AXIsProcessTrustedWithOptions(options)
-
-                if !accessEnabled {
-                    print("Accessibility permissions are not enabled. Prompting user for permissions.")
-                } else {
-                    print("Accessibility permissions are enabled.")
-                }
+    func checkAndRequestPermissions() {
+        let options: CFDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as NSString: true] as CFDictionary
+        let accessEnabled = AXIsProcessTrustedWithOptions(options)
+        if accessEnabled {
+            startGlobalMonitoringKeystrokes()
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                self.showPermissionsAlert()
             }
         }
+    }
+    
+    func showPermissionsAlert() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Accessibility Permissions Required"
+        alert.informativeText = """
+        This application requires Accessibility permissions to work properly.
+        Please go to System Preferences > Security & Privacy > Accessibility and grant access to this app.
+        """
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
     
     func startGlobalMonitoringKeystrokes() {
         NSEvent.addGlobalMonitorForEvents(matching: .keyUp) { [weak self] event in
@@ -59,22 +69,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
-    
     func handleKeyUpEvent(_ event: NSEvent) {
         guard let characters = event.characters, let notesApp = NSWorkspace.shared.frontmostApplication, notesApp.bundleIdentifier == "com.apple.Notes" else {
             return
         }
-        
+
         recentCharacters.append(contentsOf: characters.map { String($0) })
-        
+
         let maxRecentCharacters = 5
         if recentCharacters.count > maxRecentCharacters {
             recentCharacters.removeFirst(recentCharacters.count - maxRecentCharacters)
         }
 
         let recentString = recentCharacters.joined()
-        for (mdCommand, shortcutKeys) in mdCommands {
-            if recentString.hasSuffix(mdCommand) {
+
+        // Sort mdCommands by key length in descending order
+        let sortedCommands = mdCommands.keys.sorted { $0.count > $1.count }
+
+        for mdCommand in sortedCommands {
+            if recentString.hasSuffix(mdCommand), let shortcutKeys = mdCommands[mdCommand] {
+                simulateBackspace(count: mdCommand.count)
                 triggerFormatting(keys: shortcutKeys)
                 recentCharacters.removeAll()
                 break
@@ -82,9 +96,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
+    func simulateBackspace(count: Int) {
+       let backspace = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(51), keyDown: true)
+       let backspaceUp = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(51), keyDown: false)
+       
+       for _ in 0..<count {
+           backspace?.post(tap: .cghidEventTap)
+           backspaceUp?.post(tap: .cghidEventTap)
+       }
+   }
+    
     // Trigger specified Apple Notes formatting shortcut
     func triggerFormatting(keys: [CGKeyCode]) {
-        print("Triggering formatting for keys: \(keys)")
 
         let source = CGEventSource(stateID: .hidSystemState)
         let keyFlags: CGEventFlags = [.maskShift, .maskCommand]
@@ -93,7 +116,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: keyDown)
         }
 
-        // Press down all modifier keys
         keys.forEach { key in
             if let event = createKeyEvent(key: key, keyDown: true) {
                 event.flags = keyFlags
@@ -101,7 +123,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Release all modifier keys
         keys.reversed().forEach { key in
             if let event = createKeyEvent(key: key, keyDown: false) {
                 event.flags = keyFlags
@@ -113,14 +134,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
            return true
-       }
-
-       func applicationShouldRestoreApplicationState(_ app: NSApplication) -> Bool {
-           return false
-       }
-
-       func applicationShouldSaveApplicationState(_ app: NSApplication) -> Bool {
-           return false
        }
 }
 
