@@ -11,16 +11,17 @@ import Cocoa
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
     var recentCharacters = [String]()
+    var potentialMatches: [String] = []
     var globalMonitor: Any?
     
     let mdCommands: [String: [CGKeyCode]] = [
-        "# ": [CGKeyCode(56), CGKeyCode(55), CGKeyCode(17)],                // ⇧ ⌘ T
-        "## ": [CGKeyCode(56), CGKeyCode(55), CGKeyCode(4)],                // ⇧ ⌘ H
-        "### ": [CGKeyCode(56), CGKeyCode(55), CGKeyCode(38)],              // ⇧ ⌘ J
-        "#### ": [CGKeyCode(56), CGKeyCode(55), CGKeyCode(11)],             // ⇧ ⌘ B
-        "``` ": [CGKeyCode(56), CGKeyCode(55), CGKeyCode(46)],              // ⇧ ⌘ M
-        "> ": [CGKeyCode(55), CGKeyCode(39)],                               // ⌘'
-        "[] ": [CGKeyCode(56), CGKeyCode(55), CGKeyCode(37)],               // ⇧ ⌘ L
+        "#": [CGKeyCode(55), CGKeyCode(56), CGKeyCode(17)],                // ⇧ ⌘ T
+        "##": [CGKeyCode(55), CGKeyCode(56), CGKeyCode(4)],                // ⇧ ⌘ H
+        "###": [CGKeyCode(55), CGKeyCode(56), CGKeyCode(38)],              // ⇧ ⌘ J
+        "####": [CGKeyCode(55), CGKeyCode(56), CGKeyCode(11)],             // ⇧ ⌘ B
+        "```": [CGKeyCode(55), CGKeyCode(56), CGKeyCode(46)],              // ⇧ ⌘ M
+        ">": [CGKeyCode(55), CGKeyCode(39)],                               // ⌘'
+        "[]": [CGKeyCode(55), CGKeyCode(56), CGKeyCode(37)],               // ⇧ ⌘ L
     ]
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
@@ -47,9 +48,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func checkAndRequestAccessibilityPermissions() {
-        if AXIsProcessTrusted() {
-            setupGlobalMonitoring()
-        } else {
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard !AXIsProcessTrusted() else {
+                return
+            }
+            
             let options: CFDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as NSObject: true] as CFDictionary
             _ = AXIsProcessTrustedWithOptions(options)
             
@@ -72,8 +75,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func setupGlobalMonitoring() {
-        guard let notesApp = NSWorkspace.shared.frontmostApplication, notesApp.bundleIdentifier == "com.apple.Notes" else {
-            removeGlobalMonitor()
+        guard globalMonitor == nil,
+              let notesApp = NSWorkspace.shared.frontmostApplication,
+              notesApp.bundleIdentifier == "com.apple.Notes" else {
             return
         }
         
@@ -105,29 +109,45 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func handleKeyUpEvent(_ event: NSEvent) {
-        guard let characters = event.characters, let notesApp = NSWorkspace.shared.frontmostApplication, notesApp.bundleIdentifier == "com.apple.Notes" else {
+        guard let characters = event.characters,
+              let notesApp = NSWorkspace.shared.frontmostApplication,
+              notesApp.bundleIdentifier == "com.apple.Notes",
+              "#`>[] ".contains(where: characters.contains) else {
             return
         }
 
-        recentCharacters.append(contentsOf: characters.map { String($0) })
-
-        let maxRecentCharacters = 5
-        if recentCharacters.count > maxRecentCharacters {
-            recentCharacters.removeFirst(recentCharacters.count - maxRecentCharacters)
-        }
-
-        let recentString = recentCharacters.joined()
-
-        // Sort mdCommands by key length in descending order
-        let sortedCommands = mdCommands.keys.sorted { $0.count > $1.count }
-
-        for mdCommand in sortedCommands {
-            if recentString.hasSuffix(mdCommand), let shortcutKeys = mdCommands[mdCommand] {
-                simulateBackspace(count: mdCommand.count)
-                triggerFormatting(keys: shortcutKeys)
+        updatePotentialMatches(with: characters)
+        
+        // Use space to trigger formatting
+        if characters.contains(" ") {
+            let recentString = recentCharacters.joined()
+            if let command = potentialMatches.first(where: { command in
+                return recentString.hasPrefix(command) && mdCommands.keys.contains(command)
+            }) {
+                if let shortcutKeys = mdCommands[command] {
+                    simulateBackspace(count: command.count + 1)
+                    triggerFormatting(keys: shortcutKeys)
+                }
                 recentCharacters.removeAll()
-                break
+                potentialMatches.removeAll()
             }
+        }
+    }
+    
+    func updatePotentialMatches(with characters: String) {
+        let validCharacters = characters.filter { $0 != " " }
+        
+        recentCharacters.append(contentsOf: validCharacters.map { String($0) })
+        
+        if potentialMatches.isEmpty {
+            potentialMatches = mdCommands.keys.filter { $0.hasPrefix(recentCharacters.joined()) }
+        } else {
+            potentialMatches = potentialMatches.filter { $0.hasPrefix(recentCharacters.joined()) }
+        }
+        
+        if potentialMatches.isEmpty {
+            recentCharacters.removeAll()
+            potentialMatches.removeAll()
         }
     }
     
@@ -145,11 +165,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func triggerFormatting(keys: [CGKeyCode]) {
 
         let source = CGEventSource(stateID: .hidSystemState)
-        let keyFlags: CGEventFlags = [.maskShift, .maskCommand]
 
         func createKeyEvent(key: CGKeyCode, keyDown: Bool) -> CGEvent? {
             return CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: keyDown)
         }
+        
+        // Determine the modifier flags based on the keys
+        let containsShift = keys.contains(CGKeyCode(56))
+        let containsCommand = keys.contains(CGKeyCode(55))
+        let keyFlags: CGEventFlags = {
+            var flags: CGEventFlags = []
+            if containsCommand { flags.insert(.maskCommand) }
+            if containsShift { flags.insert(.maskShift) }
+            return flags
+        }()
 
         keys.forEach { key in
             if let event = createKeyEvent(key: key, keyDown: true) {

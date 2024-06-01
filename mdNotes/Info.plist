@@ -14,5 +14,7 @@
     <true/>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>This permission is required to monitor keyboard input inside of Apple Notes. No data is stored.</string>
 </dict>
 </plist>
